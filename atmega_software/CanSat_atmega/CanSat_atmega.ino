@@ -3,7 +3,7 @@
 #define debug(x) DEBUG_SERIAL.print("$D" + String(x));
 
 #include "compressed_number.h"
-#include "GPS_MODULE.h"
+
 
 //globals
 #define PRE_LAUNCH_PHASE 0
@@ -12,17 +12,17 @@
 uint8_t mission_phase = PRE_LAUNCH_PHASE;
 bool status_acknowledged = false;
 
-compressed_num temperature(low = -15, high = 30, bits = 11);
-compressed_num pressure(low = 60000, high = 110000, bits = 16);
-compressed_num humidity(low = 0, high = 100, bits = 7);
+compressed_num temperature(-15,    30,     11);
+compressed_num pressure(  60000,  110000, 16);
+compressed_num humidity(  0,      100,    7);
 
-compressed_num latitude(low = 52.164, high = 52.165, bits = 16);
-compressed_num longitude(low = 21.050, high = 21.060, bits = 16);
-compressed_num altitude(low = 0, high = 3500, bits = 15);
-
-compressed_num roll(low = 0, high = 360, bits = 12);
-compressed_num pitch(low = 0, high = 360, bits = 12);
-compressed_num heading(low = 0, high = 360, bits = 12);
+compressed_num latitude(  52.164, 52.165, 16);
+compressed_num longitude( 21.050, 21.060, 16);
+compressed_num altitude(  0,      3500,   15);
+     
+compressed_num roll(      0,      360,    12);
+compressed_num pitch(     0,      360,    12);
+compressed_num heading(   0,      360,    12);
 
 /*
 bit | device
@@ -49,12 +49,7 @@ uint8_t get_concentrated_status()
         return status; 
 }
 
-#define CELL1_PIN A0
-#define CELL2_PIN A1
-#define CELL1_MULTIPLIER 3.3 / 1023
-#define CELL2_MULTIPLIER 3.3 / 1023
-double cell1_voltage;
-double cell2_voltage;
+#include"battery.h"
 
 //Raspberry Pi
 #include <AltSoftSerial.h>
@@ -63,7 +58,6 @@ AltSoftSerial altSerial;
 #define PI_SERIAL altSerial
 #define PI_RAIL_PIN 6
 #define PI_BOOT_TIMEOUT 25
-bool pi_rail_on = false;
 char received_from_pi[PI_READ_BUFFER] = {0};
 uint8_t received_from_pi_ptr = 0;
 
@@ -87,19 +81,11 @@ void setupPiComms()
 }
 
 //LoRa config, vars and functions
-#include <SPI.h>
-#include <LoRa_mod.h>
-#define LORA_CS 10
-#define LORA_RST 7
-#define LORA_INT 2
-#define LORA_BANDWIDTH 125000L
-#define LORA_CODING_RATE 5
-uint8_t spreading_factor = 9;
-uint8_t lora_buffer[255] = {0};
-uint8_t lora_buffer_ptr = 0;
+
+#include "radio.h"
+radio lora;
 bool lora_ok = false;
 
-long last_packet_transmission = 0; //the value of millis() of last transmission
 #define MAX_PACKET_SEPARATION 950  //maximum time between packets in milliseconds
 #define STATUS_REPEAT_PERIOD 10000 //time between status retransmissions in phase 1
 
@@ -108,38 +94,6 @@ long last_packet_transmission = 0; //the value of millis() of last transmission
 #define ACTION_FLY 0x02 //enable flight mode
 #define ACTION_CMD 0x03 //a command to raspberry pi
 
-/**
- * This function sets up the LoRa module with settings from the top of the file
- * It returns 0 on success and 1 on failure.
- */
-bool initLora()
-{
-    LoRa.setPins(LORA_CS, LORA_RST, LORA_INT);
-
-    if (!LoRa.begin(433E6))
-    {
-        debug(" LoRa init failed");
-        return 0;
-    }
-    LoRa.setSpreadingFactor(spreading_factor);
-    LoRa.setCodingRate4(LORA_CODING_RATE);
-    LoRa.setSignalBandwidth(LORA_BANDWIDTH);
-    LoRa.setupInterrupts(onTxDone, onRxDone);
-    LoRa.receive();
-    debug(" LoRa init ok");
-    return 1;
-}
-
-/**
- * This function sends the first <<bytes>> bytes of <<buffer>> via lora
- */
-void send_buffer_to_gs(uint8_t *buffer, uint8_t bytes)
-{
-    last_packet_transmission = millis();
-    LoRa.beginPacket();
-    LoRa.write(buffer, bytes);
-    LoRa.endPacket();
-}
 
 /**
  * This function is called when the transmission of a packet has ended.
@@ -158,11 +112,12 @@ void onRxDone(int packet_size, bool crc_error)
     //check if the packet is for us
     if (packet_size >= 3 && LoRa.read() == 0x08 && LoRa.read() == 0x07)
     {
-        handle_action_request(LoRa.read());
+        handle_gs_message(LoRa.read());
     }
 }
 
-void handle_action_request(uint8_t action)
+
+void handle_gs_message(uint8_t action)
 {
     switch (action)
     {
@@ -173,28 +128,16 @@ void handle_action_request(uint8_t action)
         switch_to_flight_phase();
         break;
     case ACTION_CMD: //send command to pi, return the response
-        parse_lora_packet();
-        send_command_to_pi(lora_buffer, lora_buffer_ptr);
-        lora_buffer_ptr = 0;
+        lora.parse_packet();
+        send_command_to_pi(lora.buffer, lora.buffer_ptr);
+        lora.buffer_ptr = 0;
         break;
     default:
         break;
     }
 }
 
-/**
- * Copies all data from lora rx buffer to local lora_buffer
- */
-void parse_lora_packet()
-{
-    lora_buffer_ptr = 0;
-    while (LoRa.available())
-    {
 
-        lora_buffer[lora_buffer_ptr] = LoRa.read();
-        lora_buffer_ptr += 1;
-    }
-}
 
 /**
  * Sends the supplied command with $C prefix
@@ -206,9 +149,10 @@ void send_command_to_pi(uint8_t *command, uint8_t length)
 }
 
 //GPS
+#include "gps_module.h"
 #define GPS_SERIAL //gps serial
 
-GPS_MODULE gps();
+gps_module gps;
 
 #define PI_OK_STATUS 0b00000111 //two working devices and pi booted (00000111)
 #define PI_FAILED_BOOT 0b00000000
@@ -257,9 +201,9 @@ void setup()
     debug("AT online");
     setupPiComms();
     switch_pi_rail(HIGH);
-    set_status_bit(7,gps.begin();
+    gps.begin();
     gps.set_low_power();
-    set_status_bit(6, initLora());
+    lora.begin();
     boot_pi();
 }
 
@@ -277,16 +221,7 @@ void read_from_pi()
 
             if (received_from_pi[0] == '$')
             {
-                switch (received_from_pi[1])
-                {
-                case 'O':
-                    debug("got O");
-                case 'S':
-                    debug("got status");
-                    break;
-                default:
-                    break;
-                }
+                handle_pi_message(received_from_pi[1]);
             }
             received_from_pi_ptr = 0;
         }
@@ -294,6 +229,17 @@ void read_from_pi()
         {
             received_from_pi_ptr += 1;
         }
+    }
+}
+
+void handle_pi_message(uint8_t message){
+    switch(message){
+        case 'D':
+        lora.send_buffer(received_from_pi, received_from_pi_ptr);
+        break;
+        case 'L':
+        switch_to_post_flight_phase();
+        break;
     }
 }
 
@@ -322,10 +268,10 @@ void pre_launch_loop()
 
     //If ACK hasn’t been received & 10s have passed from last time: AT sends status
     //(handled by the lora interrupt function)
-    if (!status_acknowledged && millis() - last_packet_transmission > STATUS_REPEAT_PERIOD)
+    if (!status_acknowledged && millis() - lora.last_packet_transmission > STATUS_REPEAT_PERIOD)
     {
         uint8_t packet[3] = {0x07, 0x08, devices_status};
-        send_buffer_to_gs(packet, 3);
+        lora.send_buffer(packet, 3);
     }
 
     //If commands are received ($C) they are passed to and executed on PI,
@@ -346,7 +292,7 @@ void switch_to_flight_phase()
     switch_pi_rail(HIGH);
 
     //AT enables full efficiency on GPS and BME
-    setGPSMaxPower();
+    gps.set_max_power();
     //setBMEMaxPower(); - to be implemented
 
     //AT waits for PI to boot
@@ -355,7 +301,7 @@ void switch_to_flight_phase()
     uint8_t message[4] = {0x07, 0x08, 'L'};
     message[4] = devices_status;
     //AT sends “launch confirmation” to ground
-    send_buffer_to_gs(message, 4);
+    lora.send_buffer(message, 4);
 
     //AT sends “flight mode ($F)” to PI
     send_command_to_pi((uint8_t *)"$F", 2);
@@ -381,12 +327,6 @@ void send_data_to_gs()
     //TODO
 }
 
-void get_battery_voltage()
-{
-    cell1_voltage = analogRead(CELL1_PIN) * CELL1_MULTIPLIER;
-    cell2_voltage = analogRead(CELL2_PIN) * CELL2_MULTIPLIER;
-}
-
 /**
  * Executed during the flight phase
  */
@@ -402,12 +342,12 @@ void flight_loop()
     exchange_data_with_pi();
 
     //if time from last send is > 0.9s, send new packet
-    if (millis() - last_packet_transmission > MAX_PACKET_SEPARATION)
+    if (millis() - lora.last_packet_transmission > MAX_PACKET_SEPARATION)
     {
         send_data_to_gs();
     }
 
-    get_battery_voltage();
+    //get_battery_voltage();
 
     //If “landing” recieved from PI: break loop
     //(handled by on_rx_done)
@@ -420,8 +360,8 @@ void flight_loop()
 void switch_to_post_flight_phase()
 {
     mission_phase = POST_FLIGHT_PHASE;
-    LoRa.setSpreadingFactor(12);
-    setGPSLowPower();
+    lora.setSpreadingFactor(12);
+    gps.set_low_power();
     //TODO
 }
 

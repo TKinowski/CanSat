@@ -1,10 +1,7 @@
 #ifndef COMPRESSED_NUMBER_H
 #define COMPRESSED_NUMBER_H
 
-#include <inttypes.h>
 #include <math.h>
-#include <string>
-#include <iostream>
 
 using namespace std;
 
