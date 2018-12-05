@@ -15,6 +15,9 @@ class gps_module{
     bool set_low_power(){
         //TODO
     }
+    void process_input(){
+        //TODO
+    }
     
     //all data received from gps goes here
     double altitude = 0;

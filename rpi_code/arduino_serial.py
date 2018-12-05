@@ -7,6 +7,12 @@ ser = serial.Serial("/dev/ttyAMA0", baudrate = 9600, timeout = 0)
 
 ser.write("hello from pi!")
 
+def stob (string):
+    return [ord(c) for c in ''.join(list(string))]
+
+def send (message):
+    ser.write(stob(message))
+
 class serial_printer(threading.Thread):
     def __init__(self, threadID, name):
         threading.Thread.__init__(self)
@@ -28,8 +34,7 @@ ppp.start()
 try:
     while True:
         a = raw_input()
-        a.encode("ascii")
-        ser.write(a)
+        send(a)
 except KeyboardInterrupt:
     pass
 finally:

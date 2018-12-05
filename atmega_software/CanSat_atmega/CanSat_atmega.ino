@@ -1,11 +1,16 @@
+#include <AltSoftSerial.h>
+AltSoftSerial altSerial;
+
 //macros
 #define DEBUG_SERIAL Serial
+#define DEBUG_SERIAL_BAUDRATE 38400
 #define debug(x) DEBUG_SERIAL.print("$D" + String(x));
 
 //globals
 #define PRE_LAUNCH_PHASE 0
 #define FLIGHT_PHASE 1
 #define POST_FLIGHT_PHASE 2
+uint8_t mission_phase = PRE_LAUNCH_PHASE;
 
 #include "compressed_number.h"
 compressed_num temperature(-15, 30, 11);
@@ -18,21 +23,8 @@ compressed_num roll(0, 360, 12);
 compressed_num pitch(0, 360, 12);
 compressed_num heading(0, 360, 12);
 
-/*
-bit | device
-0   raspberry
-1   mpu9250
-2   camera
-3   -------
-4   bme280
-5   LoRa
-6   gps
-7   --------
-*/
-uint8_t devices_status = 0b00000000; //initially no devices are assumed to work
 bool rpi_works = 0, mpu_works = 0, camera_works = 0;
 bool lora_works = 0, gps_works = 0, bme_works = 0;
-uint8_t mission_phase = PRE_LAUNCH_PHASE;
 bool status_acknowledged = false;
 
 /**
@@ -44,22 +36,38 @@ uint8_t get_concentrated_status()
                      (lora_works << 3) | (gps_works << 4) | (bme_works << 5);
     return status;
 }
+
 //GPS
 #include "gps_module.h"
-#define GPS_SERIAL //gps serial
+#define GPS_SERIAL
 #define GPS_ALTITUDE_LAUNCH_TRESHOLD 500.0 //gps altitude change before launch is confirmed
 gps_module gps;
+double initial_gps_altitude = 1000; //over sea level, in meters
+
+//bme280
+#include "bme.h"
+bme_sensor bme;
+
+
+//battery
 #include "battery.h"
 
+
 //Raspberry Pi
-#include <AltSoftSerial.h>
-AltSoftSerial altSerial;
 #define PI_READ_BUFFER 120
 #define PI_SERIAL altSerial
 #define PI_RAIL_PIN 6
 #define PI_BOOT_TIMEOUT 25
-uint8_t received_from_pi[PI_READ_BUFFER] = {0};
+#define PI_SERIAL_BAUDRATE 38400L
+
+char received_from_pi[PI_READ_BUFFER] = {0};
 uint8_t received_from_pi_ptr = 0;
+
+//messages from pi
+#define DEBUG_FROM_PI 'D'
+#define LANDING_FROM_PI 'L'
+#define STATUS_FROM_PI 'S'
+
 
 /**
  * Controls the state of the 5v rail
@@ -75,7 +83,7 @@ void setupPiComms()
 {
     pinMode(PI_RAIL_PIN, OUTPUT);
     //digitalWrite(PI_RAIL_PIN, 0);
-    PI_SERIAL.begin(38400);
+    PI_SERIAL.begin(PI_SERIAL_BAUDRATE);
     PI_SERIAL.println("");
 }
 //LoRa config, vars and functions
@@ -172,7 +180,7 @@ void send_command_to_pi(uint8_t *command, uint8_t length)
  */
 void boot_pi()
 {
-    debug(" waiting for pi to boot") long boot_initiated = millis();
+    debug(" waiting for pi to boot... ") long boot_initiated = millis();
     while (!PI_SERIAL.available() && millis() - boot_initiated < long(PI_BOOT_TIMEOUT) * 1000)
     {
         yield;
@@ -180,7 +188,10 @@ void boot_pi()
     if (millis() - boot_initiated >= long(PI_BOOT_TIMEOUT) * 1000)
     {
         debug(" PI boot timeout\n");
-        devices_status &= 0b00011111; //set status of all pi based modules to 0
+        //set status of all pi based modules to 0
+        rpi_works = false;
+        camera_works = false;
+        mpu_works = false;
     }
     else
     {
@@ -189,34 +200,36 @@ void boot_pi()
         while (PI_SERIAL.available())
         {
             received_from_pi[received_from_pi_ptr] = PI_SERIAL.read();
-            debug(received_from_pi[received_from_pi_ptr]); //for debug purposes
             received_from_pi_ptr += 1;
             delay(5);
         }
-        if (received_from_pi[0] == '$' && received_from_pi[0] == 'S')
+        if (received_from_pi[0] == '$' && received_from_pi[1] == STATUS_FROM_PI)
         {
-            uint8_t status = PI_SERIAL.read();
-            //change first 4 bits of devices_status without changing the last 4
-            devices_status |= status & 0b11110000;
-            devices_status &= status | 0b00001111;
+            rpi_works = true;
+            camera_works = (received_from_pi[2]=='1');
+            mpu_works = (received_from_pi[3]=='1');
+            
         }
         else
         {
-            debug("message from pi is broken, retransfering status request");
-            devices_status &= 0b00011111;
+            debug("message from pi is broken, retransfering status request\n");
+            debug(String(received_from_pi[0]) + (received_from_pi[1]));
+            rpi_works = false;
+            camera_works = false;
+            mpu_works = false;
             //retransfer status request
         }
     }
 }
 
-double initial_gps_altitude = 1000;
+
 /**
  * Can be treated as "enter pre launch phase" function
  */
 void setup()
 {
-    DEBUG_SERIAL.begin(38400);
-    debug(" AT online");
+    DEBUG_SERIAL.begin(DEBUG_SERIAL_BAUDRATE);
+    debug(" AT online\n");
     setupPiComms();
     switch_pi_rail(HIGH);
     gps.begin();
@@ -250,18 +263,21 @@ void read_from_pi()
     }
 }
 
-#define PI_DEBUG 'D'
-#define PI_LANDING 'L'
-
+/**
+ * Performs the action requested by raspberry pi
+ */
 void handle_pi_message(uint8_t message)
 {
     switch (message)
     {
-    case PI_DEBUG:
+    case DEBUG_FROM_PI:
         lora.send_buffer(received_from_pi, received_from_pi_ptr);
         break;
-    case PI_LANDING:
+    case LANDING_FROM_PI:
         switch_to_post_flight_phase();
+        break;
+    case STATUS_FROM_PI:
+        //TODO
         break;
     }
 }
@@ -306,7 +322,7 @@ void pre_launch_loop()
     { 
         //this shouldn't happen, as launch command is supposed to be
         //sent by radio
-        debug("gps altitude jump, switching to flight phase")
+        debug(" gps altitude jump, switching to flight phase\n")
             switch_to_flight_phase();
     }
 }
@@ -361,11 +377,11 @@ void send_data_to_gs()
  */
 void flight_loop()
 {
-    //Try to get data from BME (change status if failed) - as often as possible
-    //parse_bme_data();
+    //read bme data
+    bme.parse_data();
 
     //Read GPS data
-    //process_gps();
+    gps.process_input();
 
     //Send converted gps data to PI, get data in return
     exchange_data_with_pi();

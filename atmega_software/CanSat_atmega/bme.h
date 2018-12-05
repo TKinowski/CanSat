@@ -13,7 +13,9 @@ class bme_sensor{
 
     bme_sensor(){}
     ~bme_sensor(){}
-
+    void parse_data(){
+        //TODO
+    }
     void set_low_power(){
         //TODO
     }

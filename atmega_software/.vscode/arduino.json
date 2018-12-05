@@ -1,4 +1,6 @@
 {
     "board": "arduino:avr:nano",
-    "sketch": "CanSat_atmega/CanSat_atmega.ino"
+    "sketch": "CanSat_atmega/CanSat_atmega.ino",
+    "port": "/dev/ttyUSB0",
+    "configuration": "cpu=atmega328old"
 }
