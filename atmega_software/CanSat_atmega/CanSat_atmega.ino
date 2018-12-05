@@ -44,13 +44,11 @@ uint8_t get_concentrated_status()
                      (lora_works << 3) | (gps_works << 4) | (bme_works << 5);
     return status;
 }
-
 //GPS
 #include "gps_module.h"
 #define GPS_SERIAL //gps serial
 #define GPS_ALTITUDE_LAUNCH_TRESHOLD 500.0 //gps altitude change before launch is confirmed
 gps_module gps;
-
 #include "battery.h"
 
 //Raspberry Pi
@@ -70,7 +68,6 @@ void switch_pi_rail(bool state)
 {
     digitalWrite(PI_RAIL_PIN, state);
 }
-
 /**
  * Sets up the pins and serial for PI communication
  */
@@ -81,20 +78,16 @@ void setupPiComms()
     PI_SERIAL.begin(38400);
     PI_SERIAL.println("");
 }
-
 //LoRa config, vars and functions
 
 #include "radio.h"
 radio lora;
-bool lora_ok = false;
-
 //constants for communication with ground
 #define SELF_ID 'A'
 #define GROUND_ID 'G'
 #define LAUNCH_CONFIRMATION 'L'
 #define STATUS_MESSAGE 'S'
 #define DATA_PACKET 'D'
-
 #define MAX_PACKET_SEPARATION 950  //maximum time between packets in milliseconds
 #define STATUS_REPEAT_PERIOD 10000 //time between status retransmissions in phase 1
 
@@ -103,16 +96,14 @@ bool lora_ok = false;
 #define ACTION_FLY 0x02        //enable flight mode
 #define ACTION_CMD 0x03        //a command to raspberry pi
 #define ACTION_REQ_STATUS 0x04 //request to send current status
-
 /**
  * This function is called when the transmission of a packet has ended.
  */
 void onTxDone()
 {
 }
-
 /**
- * This function is executed when a full packet is received, number of bytes
+ * This function is executed when a full packet is received, number of bytesl
  * is parsed to packet_size, and if there was a crc error the boolean is set 
  * to true. DO NOT PERFORM LONG TASKS HERE
  */
