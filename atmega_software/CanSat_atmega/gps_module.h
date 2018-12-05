@@ -15,6 +15,12 @@ class gps_module{
     bool set_low_power(){
         //TODO
     }
+    
+    //all data received from gps goes here
+    double altitude = 0;
+    double latitude = 0;
+    double longitude = 0;
+    //to be added: velocity, quality, etc 
 };
 
 #endif //GPS_H

@@ -2,27 +2,21 @@
 #define DEBUG_SERIAL Serial
 #define debug(x) DEBUG_SERIAL.print("$D" + String(x));
 
-#include "compressed_number.h"
-
-
 //globals
 #define PRE_LAUNCH_PHASE 0
 #define FLIGHT_PHASE 1
 #define POST_FLIGHT_PHASE 2
-uint8_t mission_phase = PRE_LAUNCH_PHASE;
-bool status_acknowledged = false;
 
-compressed_num temperature(-15,    30,     11);
-compressed_num pressure(  60000,  110000, 16);
-compressed_num humidity(  0,      100,    7);
-
-compressed_num latitude(  52.164, 52.165, 16);
-compressed_num longitude( 21.050, 21.060, 16);
-compressed_num altitude(  0,      3500,   15);
-     
-compressed_num roll(      0,      360,    12);
-compressed_num pitch(     0,      360,    12);
-compressed_num heading(   0,      360,    12);
+#include "compressed_number.h"
+compressed_num temperature(-15, 30, 11);
+compressed_num pressure(60000, 110000, 16);
+compressed_num humidity(0, 100, 7);
+compressed_num latitude(52.164, 52.165, 16);
+compressed_num longitude(21.050, 21.060, 16);
+compressed_num altitude(0, 3500, 15);
+compressed_num roll(0, 360, 12);
+compressed_num pitch(0, 360, 12);
+compressed_num heading(0, 360, 12);
 
 /*
 bit | device
@@ -38,6 +32,8 @@ bit | device
 uint8_t devices_status = 0b00000000; //initially no devices are assumed to work
 bool rpi_works = 0, mpu_works = 0, camera_works = 0;
 bool lora_works = 0, gps_works = 0, bme_works = 0;
+uint8_t mission_phase = PRE_LAUNCH_PHASE;
+bool status_acknowledged = false;
 
 /**
  * returns the status of all devices as a byte
@@ -45,11 +41,17 @@ bool lora_works = 0, gps_works = 0, bme_works = 0;
 uint8_t get_concentrated_status()
 {
     uint8_t status = rpi_works | (mpu_works << 1) | (camera_works << 2) |
-        (lora_works<<3) | (gps_works << 4) | (bme_works << 5);
-        return status; 
+                     (lora_works << 3) | (gps_works << 4) | (bme_works << 5);
+    return status;
 }
 
-#include"battery.h"
+//GPS
+#include "gps_module.h"
+#define GPS_SERIAL //gps serial
+#define GPS_ALTITUDE_LAUNCH_TRESHOLD 500.0 //gps altitude change before launch is confirmed
+gps_module gps;
+
+#include "battery.h"
 
 //Raspberry Pi
 #include <AltSoftSerial.h>
@@ -58,7 +60,7 @@ AltSoftSerial altSerial;
 #define PI_SERIAL altSerial
 #define PI_RAIL_PIN 6
 #define PI_BOOT_TIMEOUT 25
-char received_from_pi[PI_READ_BUFFER] = {0};
+uint8_t received_from_pi[PI_READ_BUFFER] = {0};
 uint8_t received_from_pi_ptr = 0;
 
 /**
@@ -86,14 +88,21 @@ void setupPiComms()
 radio lora;
 bool lora_ok = false;
 
+//constants for communication with ground
+#define SELF_ID 'A'
+#define GROUND_ID 'G'
+#define LAUNCH_CONFIRMATION 'L'
+#define STATUS_MESSAGE 'S'
+#define DATA_PACKET 'D'
+
 #define MAX_PACKET_SEPARATION 950  //maximum time between packets in milliseconds
 #define STATUS_REPEAT_PERIOD 10000 //time between status retransmissions in phase 1
 
 //possible commands from ground station (via radio)
-#define ACTION_ACK 0x01 //acknowledge status
-#define ACTION_FLY 0x02 //enable flight mode
-#define ACTION_CMD 0x03 //a command to raspberry pi
-
+#define ACTION_ACK 0x01        //acknowledge status
+#define ACTION_FLY 0x02        //enable flight mode
+#define ACTION_CMD 0x03        //a command to raspberry pi
+#define ACTION_REQ_STATUS 0x04 //request to send current status
 
 /**
  * This function is called when the transmission of a packet has ended.
@@ -110,13 +119,15 @@ void onTxDone()
 void onRxDone(int packet_size, bool crc_error)
 {
     //check if the packet is for us
-    if (packet_size >= 3 && LoRa.read() == 0x08 && LoRa.read() == 0x07)
+    if (packet_size >= 3 && LoRa.read() == GROUND_ID && LoRa.read() == SELF_ID)
     {
         handle_gs_message(LoRa.read());
     }
 }
 
-
+/**
+ * Performs the action requested by the ground station
+ */
 void handle_gs_message(uint8_t action)
 {
     switch (action)
@@ -132,12 +143,24 @@ void handle_gs_message(uint8_t action)
         send_command_to_pi(lora.buffer, lora.buffer_ptr);
         lora.buffer_ptr = 0;
         break;
+    case ACTION_REQ_STATUS:
+        send_status_to_gs();
+        break;
     default:
         break;
     }
 }
 
 
+/**
+ * Sends the status byte
+ */
+void send_status_to_gs()
+{
+    uint8_t message[4] = {SELF_ID, GROUND_ID, STATUS_MESSAGE, 0x00};
+    message[3] = get_concentrated_status();
+    lora.send_buffer(message, 4);
+}
 
 /**
  * Sends the supplied command with $C prefix
@@ -148,11 +171,7 @@ void send_command_to_pi(uint8_t *command, uint8_t length)
     PI_SERIAL.write(command, length);
 }
 
-//GPS
-#include "gps_module.h"
-#define GPS_SERIAL //gps serial
 
-gps_module gps;
 
 #define PI_OK_STATUS 0b00000111 //two working devices and pi booted (00000111)
 #define PI_FAILED_BOOT 0b00000000
@@ -162,21 +181,28 @@ gps_module gps;
  */
 void boot_pi()
 {
-    long boot_initiated = millis();
+    debug(" waiting for pi to boot") long boot_initiated = millis();
     while (!PI_SERIAL.available() && millis() - boot_initiated < long(PI_BOOT_TIMEOUT) * 1000)
     {
         yield;
     }
     if (millis() - boot_initiated >= long(PI_BOOT_TIMEOUT) * 1000)
     {
-        debug(" PI boot timeout");
+        debug(" PI boot timeout\n");
         devices_status &= 0b00011111; //set status of all pi based modules to 0
     }
     else
     {
-        debug(" PI booted ok");
-        delay(20); //give pi time to write whole status
-        if (PI_SERIAL.read() == '$' && PI_SERIAL.read() == 'S')
+        debug(" PI booted ok\n");
+        delay(20);
+        while (PI_SERIAL.available())
+        {
+            received_from_pi[received_from_pi_ptr] = PI_SERIAL.read();
+            debug(received_from_pi[received_from_pi_ptr]); //for debug purposes
+            received_from_pi_ptr += 1;
+            delay(5);
+        }
+        if (received_from_pi[0] == '$' && received_from_pi[0] == 'S')
         {
             uint8_t status = PI_SERIAL.read();
             //change first 4 bits of devices_status without changing the last 4
@@ -185,20 +211,21 @@ void boot_pi()
         }
         else
         {
-            debug("message from pi is broke");
+            debug("message from pi is broken, retransfering status request");
             devices_status &= 0b00011111;
-            //get status again
+            //retransfer status request
         }
     }
 }
 
+double initial_gps_altitude = 1000;
 /**
  * Can be treated as "enter pre launch phase" function
  */
 void setup()
 {
     DEBUG_SERIAL.begin(38400);
-    debug("AT online");
+    debug(" AT online");
     setupPiComms();
     switch_pi_rail(HIGH);
     gps.begin();
@@ -232,12 +259,17 @@ void read_from_pi()
     }
 }
 
-void handle_pi_message(uint8_t message){
-    switch(message){
-        case 'D':
+#define PI_DEBUG 'D'
+#define PI_LANDING 'L'
+
+void handle_pi_message(uint8_t message)
+{
+    switch (message)
+    {
+    case PI_DEBUG:
         lora.send_buffer(received_from_pi, received_from_pi_ptr);
         break;
-        case 'L':
+    case PI_LANDING:
         switch_to_post_flight_phase();
         break;
     }
@@ -270,8 +302,7 @@ void pre_launch_loop()
     //(handled by the lora interrupt function)
     if (!status_acknowledged && millis() - lora.last_packet_transmission > STATUS_REPEAT_PERIOD)
     {
-        uint8_t packet[3] = {0x07, 0x08, devices_status};
-        lora.send_buffer(packet, 3);
+        send_status_to_gs();
     }
 
     //If commands are received ($C) they are passed to and executed on PI,
@@ -279,7 +310,14 @@ void pre_launch_loop()
     //((handled by the lora interrupt function)
 
     //get gps altitude, compare with initial, if the signal is good and the altitude is over
-    //200m greater initiate flight phase
+    //500m greater initiate flight phase
+    if (gps.altitude - initial_gps_altitude > GPS_ALTITUDE_LAUNCH_TRESHOLD)  //add signal quality condition
+    { 
+        //this shouldn't happen, as launch command is supposed to be
+        //sent by radio
+        debug("gps altitude jump, switching to flight phase")
+            switch_to_flight_phase();
+    }
 }
 
 /**
@@ -295,13 +333,13 @@ void switch_to_flight_phase()
     gps.set_max_power();
     //setBMEMaxPower(); - to be implemented
 
-    //AT waits for PI to boot
-    boot_pi();
+    uint8_t message[3] = {SELF_ID, GROUND_ID, LAUNCH_CONFIRMATION};
+    lora.send_buffer(message, 3);
 
-    uint8_t message[4] = {0x07, 0x08, 'L'};
-    message[4] = devices_status;
-    //AT sends “launch confirmation” to ground
-    lora.send_buffer(message, 4);
+        //AT waits for PI to boot
+        boot_pi();
+
+    send_status_to_gs();
 
     //AT sends “flight mode ($F)” to PI
     send_command_to_pi((uint8_t *)"$F", 2);
