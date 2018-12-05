@@ -1,4 +1,4 @@
 {
-    "board": "arduino:avr:uno",
-    "sketch": "CanSat_atmega.ino"
+    "board": "arduino:avr:nano",
+    "sketch": "CanSat_atmega/CanSat_atmega.ino"
 }

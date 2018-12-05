@@ -4,7 +4,9 @@
             "name": "Linux",
             "includePath": [
                 "/home/mateusz/Downloads/arduino-nightly/tools/**",
-                "/home/mateusz/Downloads/arduino-nightly/hardware/arduino/avr/**"
+                "/home/mateusz/Downloads/arduino-nightly/hardware/tools/avr/avr/include/avr",
+                "/home/mateusz/Downloads/arduino-nightly/hardware/arduino/avr/**",
+                "/home/mateusz/Arduino/libraries/**"
             ],
             "forcedInclude": [
                 "/home/mateusz/Downloads/arduino-nightly/hardware/arduino/avr/cores/arduino/Arduino.h"
