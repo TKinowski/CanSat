@@ -23,8 +23,8 @@ compressed_num roll(0, 360, 12);
 compressed_num pitch(0, 360, 12);
 compressed_num heading(0, 360, 12);
 
-bool rpi_works = 0, mpu_works = 0, camera_works = 0;
-bool lora_works = 0, gps_works = 0, bme_works = 0;
+bool rpi_works = 0, mpu_works = 0, camera_works = 0, movidius_works = 0; //devices on raspberry
+bool lora_works = 0, gps_works = 0, bme_works = 0;  //devices on atmega
 bool status_acknowledged = false;
 
 /**
@@ -42,7 +42,7 @@ uint8_t get_concentrated_status()
 #define GPS_SERIAL
 #define GPS_ALTITUDE_LAUNCH_TRESHOLD 500.0 //gps altitude change before launch is confirmed
 gps_module gps;
-double initial_gps_altitude = 1000; //over sea level, in meters
+double initial_gps_altitude = 1000.0 ; //over sea level, in meters
 
 //bme280
 #include "bme.h"
@@ -68,6 +68,9 @@ uint8_t received_from_pi_ptr = 0;
 #define LANDING_FROM_PI 'L'
 #define STATUS_FROM_PI 'S'
 
+//messages to pi
+#define COMMAND_TO_PI 'C'
+#define ENABLE_FLIGHT_MODE 'F'
 
 /**
  * Controls the state of the 5v rail
@@ -91,25 +94,30 @@ void setupPiComms()
 #include "radio.h"
 radio lora;
 //constants for communication with ground
-#define SELF_ID 'A'
+#define SELF_ID 'C'
 #define GROUND_ID 'G'
 #define LAUNCH_CONFIRMATION 'L'
 #define STATUS_MESSAGE 'S'
 #define DATA_PACKET 'D'
+#define PI_OUTPUT 'O'
+
+//possible commands from ground station (via radio)
+#define ACTION_ACK 'A'        //acknowledge status
+#define ACTION_FLY 'L'        //enable flight mode
+#define ACTION_CMD 'C'        //a command to raspberry pi
+#define ACTION_REQ 'R' //request to send current status
+
 #define MAX_PACKET_SEPARATION 950  //maximum time between packets in milliseconds
 #define STATUS_REPEAT_PERIOD 10000 //time between status retransmissions in phase 1
 
-//possible commands from ground station (via radio)
-#define ACTION_ACK 0x01        //acknowledge status
-#define ACTION_FLY 0x02        //enable flight mode
-#define ACTION_CMD 0x03        //a command to raspberry pi
-#define ACTION_REQ_STATUS 0x04 //request to send current status
 /**
  * This function is called when the transmission of a packet has ended.
  */
 void onTxDone()
 {
+    lora_works=true;
 }
+
 /**
  * This function is executed when a full packet is received, number of bytesl
  * is parsed to packet_size, and if there was a crc error the boolean is set 
@@ -121,6 +129,10 @@ void onRxDone(int packet_size, bool crc_error)
     if (packet_size >= 3 && LoRa.read() == GROUND_ID && LoRa.read() == SELF_ID)
     {
         handle_gs_message(LoRa.read());
+    }
+
+    if (mission_phase == POST_FLIGHT_PHASE){
+        send_beacon_packet();
     }
 }
 
@@ -142,7 +154,7 @@ void handle_gs_message(uint8_t action)
         send_command_to_pi(lora.buffer, lora.buffer_ptr);
         lora.buffer_ptr = 0;
         break;
-    case ACTION_REQ_STATUS:
+    case ACTION_REQ:
         send_status_to_gs();
         break;
     default:
@@ -158,7 +170,9 @@ void send_status_to_gs()
 {
     uint8_t message[4] = {SELF_ID, GROUND_ID, STATUS_MESSAGE, 0x00};
     message[3] = get_concentrated_status();
-    lora.send_buffer(message, 4);
+    LoRa.beginPacket();
+    LoRa.write(message, 4);
+    LoRa.endPacket();
 }
 
 /**
@@ -166,14 +180,10 @@ void send_status_to_gs()
  */
 void send_command_to_pi(uint8_t *command, uint8_t length)
 {
-    PI_SERIAL.write("$C");
+    PI_SERIAL.write('$');
+    PI_SERIAL.write(COMMAND_TO_PI);
     PI_SERIAL.write(command, length);
 }
-
-
-
-#define PI_OK_STATUS 0b00000111 //two working devices and pi booted (00000111)
-#define PI_FAILED_BOOT 0b00000000
 
 /**
  * waits for activity on PI_SERIAL, returns error on timeout
@@ -206,9 +216,7 @@ void boot_pi()
         if (received_from_pi[0] == '$' && received_from_pi[1] == STATUS_FROM_PI)
         {
             rpi_works = true;
-            camera_works = (received_from_pi[2]=='1');
-            mpu_works = (received_from_pi[3]=='1');
-            
+            parse_status_from_pi();
         }
         else
         {
@@ -217,9 +225,19 @@ void boot_pi()
             rpi_works = false;
             camera_works = false;
             mpu_works = false;
-            //retransfer status request
+            //TODO: retransfer status request
         }
     }
+}
+
+/**
+ * Gets called when status is received from pi, parses it to bools
+ */
+bool parse_status_from_pi(){
+    if (received_from_pi[0] != '$' || received_from_pi[1] != STATUS_FROM_PI) return 0;
+    camera_works = (received_from_pi[2]=='1');
+    mpu_works = (received_from_pi[3]=='1');
+    return 1;
 }
 
 
@@ -232,9 +250,8 @@ void setup()
     debug(" AT online\n");
     setupPiComms();
     switch_pi_rail(HIGH);
-    gps.begin();
-    gps.set_low_power();
-    lora.begin();
+    gps_works = gps.begin();
+    lora_works = lora.begin();
     boot_pi();
 }
 
@@ -271,13 +288,16 @@ void handle_pi_message(uint8_t message)
     switch (message)
     {
     case DEBUG_FROM_PI:
-        lora.send_buffer(received_from_pi, received_from_pi_ptr);
+        LoRa.beginPacket();
+        uint8_t header[3] = {SELF_ID, GROUND_ID, PI_OUTPUT};
+        LoRa.write(received_from_pi, received_from_pi_ptr);
+        LoRa.endPacket();
         break;
     case LANDING_FROM_PI:
         switch_to_post_flight_phase();
         break;
     case STATUS_FROM_PI:
-        //TODO
+        parse_status_from_pi();
         break;
     }
 }
@@ -341,15 +361,17 @@ void switch_to_flight_phase()
     //setBMEMaxPower(); - to be implemented
 
     uint8_t message[3] = {SELF_ID, GROUND_ID, LAUNCH_CONFIRMATION};
-    lora.send_buffer(message, 3);
+    LoRa.beginPacket();
+    LoRa.write(message, 3);
+    LoRa.endPacket();
 
-        //AT waits for PI to boot
-        boot_pi();
+    //AT waits for PI to boot
+    boot_pi();
 
     send_status_to_gs();
 
-    //AT sends “flight mode ($F)” to PI
-    send_command_to_pi((uint8_t *)"$F", 2);
+    //AT sends “launch confirmed” to PI
+    send_command_to_pi(ENABLE_FLIGHT_MODE, 1);
 
     mission_phase = FLIGHT_PHASE;
 }
@@ -420,4 +442,11 @@ void post_flight_loop()
     delay(10000);
 
     //send a packet with location at SF12
+    send_beacon_packet();
+}
+
+void send_beacon_packet(){
+    LoRa.beginPacket();
+    //TODO: send location in plaintext
+    LoRa.endPacket();
 }

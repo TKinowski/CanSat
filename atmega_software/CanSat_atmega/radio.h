@@ -51,19 +51,6 @@ bool radio::begin()
 }
 
 /**
- * This function sends the first <<bytes>> bytes of <<buffer>> via lora
- */
-void radio::send_buffer(uint8_t *buffer, uint8_t bytes)
-{
-    last_packet_transmission = millis();
-    LoRa.beginPacket();
-    LoRa.write(buffer, bytes);
-    LoRa.endPacket();
-}
-
-
-
-/**
  * Copies all data from lora rx buffer to local lora_buffer
  */
 void radio::parse_packet()

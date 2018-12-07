@@ -1,0 +1,33 @@
+Communication ground station -> atmega (via lora radio)
+
+1 byte: transmitter id - 'G'
+2 byte: target id - 'C'
+3 byte: command:
+    C = pass the rest of the packet to raspberry pi as a command (with an $C)
+    L = launch immenient, switch to flight mode
+    A = acknowledgement of status
+    R = request for status
+
+Communication atmega -> ground station (via lora radio)
+1 byte: transmitter id - 'C'
+2 byte: target id - 'G'
+3 byte: command:
+    S = status message, next byte is compressed status
+    L = launch confirmation
+    D = packet with data, followed by several bytes
+    O = output from raspberry
+
+Communication atmega -> raspberry (via serial port)
+1 char: '$'
+2 char:
+    C = read until \n, execute as command and return the output
+    F = switch to flight mode
+    
+    
+Communication raspberry -> atmega (via serial port)
+1 char: '$'
+2 char:
+    S = status, folowed by 3 chars, each being '0' or '1' , for each device on PI
+    D = debug, send to ground station
+    L = landing, switch to post flight mode
+    
